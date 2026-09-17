@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Painel do LED</title>
+<title>Painel do LED - ESP32</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@500;600;700&display=swap" rel="stylesheet">
 <script>
@@ -126,12 +126,28 @@
     transition: background 0.3s;
   }
   .conn-dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 22px;
+  }
   h1 {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 22px;
     font-weight: 600;
-    margin: 0 0 22px;
+    margin: 0;
     color: #f2f6f6;
+  }
+  .chip {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--green);
+    border: 1px solid var(--green);
+    border-radius: 6px;
+    padding: 3px 9px;
   }
   .card {
     background: var(--panel);
@@ -149,18 +165,14 @@
     display: block;
     margin-bottom: 6px;
   }
-  input[type=text] {
-    width: 100%;
-    background: #0b0f10;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    color: var(--text);
+  .topics {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 14px;
-    padding: 10px 12px;
-    outline: none;
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.7;
+    word-break: break-all;
   }
-  input[type=text]:focus { border-color: var(--amber-dim); }
+  .topics b { color: var(--text); font-weight: 500; }
 
   .led-stage {
     display: flex;
@@ -211,6 +223,7 @@
   }
   button.act:hover:not(:disabled) { border-color: var(--text-dim); }
   button.act:active:not(:disabled) { transform: translateY(1px); }
+  button.act:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   button.act:disabled { opacity: 0.35; cursor: not-allowed; }
   button.on { color: var(--amber); }
   button.on:hover:not(:disabled) { border-color: var(--amber-dim); background: #1c1710; }
@@ -222,7 +235,7 @@
     font-size: 11px;
     color: var(--text-dim);
     line-height: 1.6;
-    max-height: 90px;
+    max-height: 120px;
     overflow-y: auto;
   }
   .log .row { display: flex; gap: 8px; }
@@ -235,7 +248,10 @@
     <span><span id="connDot" class="conn-dot"></span><span id="connLabel">desconectado</span></span>
     <span>mqtt / broker.hivemq.com</span>
   </div>
-  <h1>Painel do LED</h1>
+  <div class="title-row">
+    <h1>Painel do LED</h1>
+    <span class="chip">ESP32</span>
+  </div>
 
   <div class="card">
     <div class="led-stage">
@@ -250,6 +266,13 @@
   </div>
 
   <div class="card">
+    <div class="topics">
+      comando: <b id="topicCmd"></b><br>
+      estado: <b id="topicState"></b>
+    </div>
+  </div>
+
+  <div class="card">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
       <label class="field-label" style="margin:0;">Registro</label>
       <button class="act" id="btnReconnect" style="padding:6px 14px; font-size:11px;">Reconectar</button>
@@ -259,7 +282,9 @@
 </div>
 
 <script>
-const SUFFIX = 'bancadaXX'; // fixo, igual ao usado no código do Arduino
+// Topicos iguais aos do codigo do ESP32
+const TOPICO_COMANDO = 'catolica/iot/led/comando';
+const TOPICO_ESTADO  = 'catolica/iot/led/estado';
 
 let client = null;
 
@@ -271,16 +296,22 @@ const btnOn = document.getElementById('btnOn');
 const btnOff = document.getElementById('btnOff');
 const logEl = document.getElementById('log');
 
+document.getElementById('topicCmd').textContent = TOPICO_COMANDO;
+document.getElementById('topicState').textContent = TOPICO_ESTADO;
+
+// textContent em vez de innerHTML: qualquer um pode publicar no topico,
+// entao o texto recebido nunca e tratado como HTML
 function log(msg) {
   const row = document.createElement('div');
   row.className = 'row';
-  const time = new Date().toLocaleTimeString('pt-BR', { hour12: false });
-  row.innerHTML = '<span class="t">' + time + '</span><span>' + msg + '</span>';
+  const t = document.createElement('span');
+  t.className = 't';
+  t.textContent = new Date().toLocaleTimeString('pt-BR', { hour12: false });
+  const m = document.createElement('span');
+  m.textContent = msg;
+  row.append(t, m);
   logEl.prepend(row);
 }
-
-const TOPICO_COMANDO = 'iot2026/' + SUFFIX + '/led/comando';
-const TOPICO_ESTADO  = 'iot2026/' + SUFFIX + '/led/estado';
 
 function setLed(on) {
   bulb.classList.toggle('lit', on);
@@ -288,48 +319,66 @@ function setLed(on) {
   stateText.classList.toggle('on', on);
 }
 
+function setConectado(on, texto) {
+  dot.classList.toggle('on', on);
+  connLabel.textContent = texto;
+  btnOn.disabled = !on;
+  btnOff.disabled = !on;
+}
+
 function connect() {
   if (client) {
-    try { client.disconnect(); } catch (e) {}
+    const antigo = client;
+    client = null;
+    try { antigo.disconnect(); } catch (e) {}
   }
 
-  const clientId = 'painel-' + Math.random().toString(16).slice(2, 10);
-  client = new Paho.Client('broker.hivemq.com', 8884, '/mqtt', clientId);
+  const clientId = 'painel-esp32-' + Math.random().toString(16).slice(2, 10);
+  const c = new Paho.Client('broker.hivemq.com', 8884, '/mqtt', clientId);
+  client = c;
 
-  client.onConnectionLost = (resp) => {
-    dot.classList.remove('on');
-    connLabel.textContent = 'desconectado';
-    btnOn.disabled = true;
-    btnOff.disabled = true;
+  c.onConnected = (reconectou) => {
+    if (c !== client) return;
+    setConectado(true, 'conectado');
+    c.subscribe(TOPICO_ESTADO);
+    log((reconectou ? 'reconectado' : 'conectado') + ', ouvindo ' + TOPICO_ESTADO);
+  };
+
+  c.onConnectionLost = (resp) => {
+    if (c !== client) return;
+    setConectado(false, 'reconectando...');
     log('conexão perdida: ' + (resp.errorMessage || 'sem detalhes'));
   };
 
-  client.onMessageArrived = (message) => {
-    const payload = message.payloadString.trim();
-    if (payload === '1') { setLed(true); log('estado recebido: aceso'); }
-    else if (payload === '0') { setLed(false); log('estado recebido: apagado'); }
+  // O ESP32 publica LIGADO ou DESLIGADO (retained)
+  c.onMessageArrived = (message) => {
+    const payload = message.payloadString.trim().toUpperCase();
+    if (payload === 'LIGADO') {
+      setLed(true);
+      log('estado recebido: LIGADO');
+    } else if (payload === 'DESLIGADO') {
+      setLed(false);
+      log('estado recebido: DESLIGADO');
+    } else {
+      log('mensagem ignorada no estado: ' + payload.slice(0, 40));
+    }
   };
 
-  connLabel.textContent = 'conectando...';
+  setConectado(false, 'conectando...');
   log('tentando conectar em broker.hivemq.com:8884...');
-  client.connect({
+  c.connect({
     useSSL: true,
     timeout: 10,
-    onSuccess: () => {
-      dot.classList.add('on');
-      connLabel.textContent = 'conectado';
-      btnOn.disabled = false;
-      btnOff.disabled = false;
-      client.subscribe(TOPICO_ESTADO);
-      log('conectado ao broker, ouvindo ' + TOPICO_ESTADO);
-    },
+    reconnect: true,
     onFailure: (err) => {
-      connLabel.textContent = 'falha ao conectar';
-      log('falha ao conectar: ' + (err.errorMessage || 'timeout') + ' — clique em Reconectar');
+      if (c !== client) return;
+      setConectado(false, 'falha ao conectar');
+      log('falha ao conectar: ' + (err.errorMessage || 'timeout') + ' - clique em Reconectar');
     }
   });
 }
 
+// O ESP32 espera LIGAR ou DESLIGAR no topico de comando
 function sendCommand(value) {
   if (!client || !client.isConnected()) return;
   const msg = new Paho.Message(value);
@@ -338,8 +387,8 @@ function sendCommand(value) {
   log('comando enviado: ' + value);
 }
 
-btnOn.addEventListener('click', () => sendCommand('1'));
-btnOff.addEventListener('click', () => sendCommand('0'));
+btnOn.addEventListener('click', () => sendCommand('LIGAR'));
+btnOff.addEventListener('click', () => sendCommand('DESLIGAR'));
 document.getElementById('btnReconnect').addEventListener('click', connect);
 
 connect();
